@@ -34,8 +34,20 @@ private:
 
   vr::IVRSystem* _system;
   vr::IVRCompositor* _compositor;
-  std::vector<uint32_t> _fbo;
-  std::vector<uint32_t> _fb_tex;
+
+  struct FramebufData
+  {
+    GLuint depthBufferId;
+    GLuint renderTextureId;
+    GLuint renderFramebufferId;
+    GLuint resolveTextureId;
+    GLuint resolveFramebufferId;
+  };
+
+  FramebufData leftEye;
+  FramebufData rightEye;
+
+  bool create_frame_buf(int, int, FramebufData&);
 };
 
 #endif

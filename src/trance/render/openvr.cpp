@@ -42,41 +42,64 @@ OpenVrRenderer::OpenVrRenderer(const trance_pb::System& system)
   }
 
   _system->GetRecommendedRenderTargetSize(&_width, &_height);
-  for (int i = 0; i < 2; ++i) {
-    GLuint fbo;
-    GLuint fb_tex;
-
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
-    glGenTextures(1, &fb_tex);
-    glBindTexture(GL_TEXTURE_2D, fb_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, _width, _height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                 nullptr);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb_tex, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-      std::cerr << "framebuffer failed" << std::endl;
-      return;
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    _fbo.push_back(fbo);
-    _fb_tex.push_back(fb_tex);
+  if (!(create_frame_buf(_width, _height, leftEye) && create_frame_buf(_width, _height, rightEye))) {
+    std::cerr << "framebuffer failed" << std::endl;
+    return;
   }
+
   _success = true;
 }
 
 OpenVrRenderer::~OpenVrRenderer()
 {
-  for (auto fb_tex : _fb_tex) {
-    glDeleteTextures(1, &fb_tex);
-  }
-  for (auto fbo : _fbo) {
-    glDeleteFramebuffers(1, &fbo);
-  }
   if (_initialised) {
     vr::VR_Shutdown();
   }
+
+  glDeleteRenderbuffers(1, &leftEye.depthBufferId);
+  glDeleteTextures(1, &leftEye.renderTextureId);
+  glDeleteFramebuffers(1, &leftEye.renderFramebufferId);
+  glDeleteTextures(1, &leftEye.resolveTextureId);
+  glDeleteFramebuffers(1, &leftEye.resolveFramebufferId);
+
+  glDeleteRenderbuffers(1, &rightEye.depthBufferId);
+  glDeleteTextures(1, &rightEye.renderTextureId);
+  glDeleteFramebuffers(1, &rightEye.renderFramebufferId);
+  glDeleteTextures(1, &rightEye.resolveTextureId);
+  glDeleteFramebuffers(1, &rightEye.resolveFramebufferId);
+}
+
+bool OpenVrRenderer::create_frame_buf(int width, int height, FramebufData &fbuf_data)
+{
+  glGenFramebuffers(1, &fbuf_data.renderFramebufferId);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbuf_data.renderFramebufferId);
+
+  glGenRenderbuffers(1, &fbuf_data.depthBufferId);
+  glBindRenderbuffer(GL_RENDERBUFFER, fbuf_data.depthBufferId);
+  glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT, width, height);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fbuf_data.depthBufferId);
+
+  glGenTextures(1, &fbuf_data.renderTextureId);
+  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, fbuf_data.renderTextureId);
+  glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, width, height, true);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, fbuf_data.renderTextureId, 0);
+
+  glGenFramebuffers(1, &fbuf_data.resolveFramebufferId);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbuf_data.resolveFramebufferId);
+
+  glGenTextures(1, &fbuf_data.resolveTextureId);
+  glBindTexture(GL_TEXTURE_2D, fbuf_data.resolveTextureId);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbuf_data.resolveTextureId, 0);
+
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    return false;
+  }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  return true;
 }
 
 bool OpenVrRenderer::success() const
@@ -132,21 +155,39 @@ bool OpenVrRenderer::update()
 void OpenVrRenderer::render(const std::function<void(State)>& render_fn)
 {
   static vr::TrackedDevicePose_t m_rTrackedDevicePose[vr::k_unMaxTrackedDeviceCount];
-  auto error = vr::VRCompositor()->WaitGetPoses(m_rTrackedDevicePose, vr::k_unMaxTrackedDeviceCount,
-                                                nullptr, 0);
+  auto error = vr::VRCompositor()->WaitGetPoses(m_rTrackedDevicePose, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
   if (error != vr::VRCompositorError_None) {
     std::cerr << "compositor wait failed: " << static_cast<uint32_t>(error) << std::endl;
   }
 
-  for (int eye = 0; eye < 2; ++eye) {
-    glBindFramebuffer(GL_FRAMEBUFFER, _fbo[eye]);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glViewport(0, 0, _width, _height);
-    render_fn(eye ? State::VR_RIGHT : State::VR_LEFT);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-  }
-  vr::Texture_t left = {(void*) (uintptr_t) _fbo[0], vr::TextureType_OpenGL, vr::ColorSpace_Gamma};
-  vr::Texture_t right = {(void*) (uintptr_t) _fbo[1], vr::TextureType_OpenGL, vr::ColorSpace_Gamma};
+  // LEFT
+  glBindFramebuffer(GL_FRAMEBUFFER, leftEye.renderFramebufferId);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glViewport(0, 0, _width, _height);
+  render_fn(State::VR_LEFT);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, leftEye.renderFramebufferId);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, leftEye.resolveFramebufferId);
+  glBlitFramebuffer(0, 0, _width, _height, 0, 0, _width, _height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+  // RIGHT
+  glBindFramebuffer(GL_FRAMEBUFFER, rightEye.renderFramebufferId);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glViewport(0, 0, _width, _height);
+  render_fn(State::VR_RIGHT);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, rightEye.renderFramebufferId);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, rightEye.resolveFramebufferId);
+  glBlitFramebuffer(0, 0, _width, _height, 0, 0, _width, _height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+  vr::Texture_t left = { (void*)(uintptr_t)leftEye.resolveTextureId, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
+  vr::Texture_t right = { (void*)(uintptr_t)rightEye.resolveTextureId, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
   error = vr::VRCompositor()->Submit(vr::Eye_Left, &left);
   if (error != vr::VRCompositorError_None) {
     std::cerr << "compositor submit failed: " << static_cast<uint32_t>(error) << std::endl;
