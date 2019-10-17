@@ -98,10 +98,6 @@ bool Director::vr_enabled() const
 
 void Director::render_spiral(float spiral, uint32_t spiral_width, uint32_t spiral_type) const
 {
-  if (_renderer.is_openvr()) {
-    // 3D spiral broken on OpenVR.
-    return;
-  }
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glDisable(GL_DEPTH_TEST);
@@ -109,11 +105,14 @@ void Director::render_spiral(float spiral, uint32_t spiral_width, uint32_t spira
   glDisable(GL_CULL_FACE);
 
   auto aspect_ratio = float(_renderer.view_width()) / float(_renderer.height());
+  float near_plane = _renderer.eye_spacing_multiplier();
+  float eye_off = _renderer.is_openvr() ?
+    2.f * eye_offset() / _renderer.eye_spacing_multiplier() : eye_offset();
 
   glUseProgram(_spiral_program);
-  glUniform1f(glGetUniformLocation(_spiral_program, "near_plane"), 1.f);
-  glUniform1f(glGetUniformLocation(_spiral_program, "far_plane"), 1.f + far_plane_distance());
-  glUniform1f(glGetUniformLocation(_spiral_program, "eye_offset"), eye_offset());
+  glUniform1f(glGetUniformLocation(_spiral_program, "near_plane"), near_plane);
+  glUniform1f(glGetUniformLocation(_spiral_program, "far_plane"), near_plane + far_plane_distance());
+  glUniform1f(glGetUniformLocation(_spiral_program, "eye_offset"), eye_off);
   glUniform1f(glGetUniformLocation(_spiral_program, "aspect_ratio"), aspect_ratio);
   glUniform1f(glGetUniformLocation(_spiral_program, "width"), float(spiral_width));
   glUniform1f(glGetUniformLocation(_spiral_program, "spiral_type"), float(spiral_type));
@@ -393,6 +392,7 @@ float Director::far_plane_distance() const
 {
   return _system.draw_depth().draw_depth() * 256.f;
 }
+
 
 float Director::eye_offset() const
 {
